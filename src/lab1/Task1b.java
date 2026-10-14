@@ -12,7 +12,7 @@ public class Task1b {
 
     private static int[] numbers;
 
-    // Шаг 1: Загрузка всех чисел в память один раз
+    // Step 1: loading all numbers into memory once
     public static void loadData() throws Exception {
         if (numbers != null) return;
         numbers = new int[50_000_000];
@@ -30,26 +30,26 @@ public class Task1b {
 
         System.out.println("--- Starting Task 1b with " + numThreads + " threads ---");
 
-        // Вариант 1: Без синхронизации (будет рассинхрон / race condition)
+        // Variant 1: Without synchronization (race condition)
         long start = System.currentTimeMillis();
         UnsyncResult uRes = runUnsynchronized(numThreads);
         System.out.println("[1b] Unsynchronized -> Time: " + (System.currentTimeMillis() - start) + 
                 " ms | Zeros: " + uRes.zeros + " (Note: totals might be incorrect due to race condition)");
 
-        // Вариант 2: С блокировкой (Locked)
+        // Variant 2: Locked
         start = System.currentTimeMillis();
         SyncResult sRes = runLocked(numThreads);
         System.out.println("[1b] Locked (ReentrantLock) -> Time: " + (System.currentTimeMillis() - start) + 
                 " ms | Zeros: " + sRes.zeros);
 
-        // Вариант 3: С локальными счетчиками потоков (Thread-local / Независимые результаты)
+        // Variant 3: Thread-local
         start = System.currentTimeMillis();
         LocalResult lRes = runLocal(numThreads);
         System.out.println("[1b] Thread-Local Counters -> Time: " + (System.currentTimeMillis() - start) + 
                 " ms | Zeros: " + lRes.zeros);
     }
 
-    // --- Способ 1: Без синхронизации ---
+    //  Way 1: No synchronization
     private static class UnsyncResult { long neg = 0, pos = 0, zeros = 0; }
     
     private static UnsyncResult runUnsynchronized(int threads) throws Exception {
@@ -73,7 +73,7 @@ public class Task1b {
         return res;
     }
 
-    // --- Способ 2: С явной блокировкой (ReentrantLock) ---
+    // Way 2: ReentrantLock
     private static class SyncResult { long neg = 0, pos = 0, zeros = 0; }
     
     private static SyncResult runLocked(int threads) throws Exception {
@@ -107,7 +107,7 @@ public class Task1b {
         return res;
     }
 
-    // --- Способ 3: Локальные счетчики (самый быстрый и безопасный) ---
+    // Way 3: Local counters ( fastest and safest)
     private static class LocalResult { long neg = 0, pos = 0, zeros = 0; }
     
     private static LocalResult runLocal(int threads) throws Exception {
