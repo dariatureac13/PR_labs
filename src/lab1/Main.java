@@ -11,15 +11,15 @@ public class Main {
         int threads = Integer.parseInt(args[1]);
 
         try {
-            // Принудительно запускаем сборку мусора перед замером, чтобы очистить старые объекты
+            // Force garbage collection before measurement to clear old objects
             System.gc();
-            Thread.sleep(100); // Даем потоку сборщика мусора отработать
+            Thread.sleep(100); // Give the garbage collector thread time to run
 
             Runtime runtime = Runtime.getRuntime();
             long memoryBefore = runtime.totalMemory() - runtime.freeMemory();
             long startTime = System.currentTimeMillis();
 
-            // Выполнение задач
+            // Execute tasks
             if (task.equals("1a")) {
                 Task1a.Result res = Task1a.runTask(threads);
                 printResult(res.negatives, res.positives, res.zeros);
@@ -28,11 +28,15 @@ public class Main {
             } else if (task.equals("1c")) {
                 Task1c.Result res = Task1c.runTask(threads);
                 printResult(res.negatives, res.positives, res.zeros);
+            } else if (task.equals("2")) {
+                Task2.Result res = Task2.runTask(threads);
+                printResult(res.negatives, res.positives, res.zeros);
             }
+
 
             long endTime = System.currentTimeMillis();
 
-            // Замер памяти после выполнения
+            // Measure memory after execution
             long memoryAfter = runtime.totalMemory() - runtime.freeMemory();
             long peakMemoryMB = Math.max(0, (memoryAfter - memoryBefore) / (1024 * 1024));
 

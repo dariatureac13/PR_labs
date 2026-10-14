@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit;
 
 public class Task1c {
 
-    // Специальный маркер окончания работы (ядрышко яда / Poison Pill) для потоков
+    // Special thread termination marker (Poison Pill)
     private static final List<String> POISON_PILL = new ArrayList<>();
 
     public static class Result {
@@ -32,14 +32,14 @@ public class Task1c {
     }
 
     public static Result runTask(int numWorkers) throws Exception {
-        // Очередь с ограничением размера буфера в 100 батчей
+        // A queue with a buffer size limit of 100 batches
         ArrayBlockingQueue<List<String>> queue = new ArrayBlockingQueue<>(100);
         Result totalResult = new Result();
 
-        // Пулин потоков: 1 поток для чтения (Producer) + numWorkers для счета (Consumers)
+        // Thread pool: 1 reading thread (Producer) + numWorkers for computation (Consumers).
         ExecutorService executor = Executors.newFixedThreadPool(numWorkers + 1);
 
-        // --- PRODUCER (Поток-читатель) ---
+        // PRODUCER (Reading Thread)
         executor.submit(() -> {
             try (BufferedReader br = new BufferedReader(new FileReader("numbers.txt"))) {
                 List<String> batch = new ArrayList<>(10_000);
@@ -48,7 +48,7 @@ public class Task1c {
                 while ((line = br.readLine()) != null) {
                     batch.add(line);
                     if (batch.size() == 10_000) {
-                        queue.put(batch); // Блокирует поток, если очередь заполнена
+                        queue.put(batch); // Blocks the thread if the queue is full.
                         batch = new ArrayList<>(10_000);
                     }
                 }
@@ -56,7 +56,7 @@ public class Task1c {
                     queue.put(batch);
                 }
                 
-                // Рассылаем "таблетки смерти" для каждого воркера, чтобы они знали, что файл кончился
+                // Sending "poison pills" to each worker so they know the file has ended.
                 for (int i = 0; i < numWorkers; i++) {
                     queue.put(POISON_PILL);
                 }
@@ -65,14 +65,14 @@ public class Task1c {
             }
         });
 
-        // --- CONSUMERS (Потоки-воркеры) ---
+        //  CONSUMERS (Working threads)
         for (int i = 0; i < numWorkers; i++) {
             executor.submit(() -> {
                 try {
                     while (true) {
-                        List<String> batch = queue.take(); // Ждет, пока появится батч в очереди
+                        List<String> batch = queue.take(); // Waits until a batch appears in the queue.
                         if (batch == POISON_PILL) {
-                            break; // Выходим из цикла при получении сигнала завершения
+                            break; // Exiting the loop upon receiving the termination signal.
                         }
                         totalResult.merge(batch);
                     }
