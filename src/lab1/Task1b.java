@@ -2,142 +2,129 @@ package lab1;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Lock;
+import java.util.concurrent.Future;
 import java.util.concurrent.locks.ReentrantLock;
 
+/** Task 1b: Three ways to count signs in an `int[]` (loading time is not measured). */
 public class Task1b {
-
     private static int[] numbers;
+    private static int count;
 
-    // Step 1: loading all numbers into memory once
-    public static void loadData() throws Exception {
-        if (numbers != null) return;
-        numbers = new int[50_000_000];
-        try (BufferedReader br = new BufferedReader(new FileReader("numbers.txt"))) {
+    private interface Range {
+        void run(int idx, int start, int end);
+    }
+
+    private static class Shared {
+        long neg, pos, zeros; // ordinary fields, without volatile and without locks
+    }
+
+    public static void runAll(String path) throws Exception {
+        load(path);
+        int threads = Runtime.getRuntime().availableProcessors();
+        System.out.println("Logical processors = threads = " + threads + ", numbers = " + count);
+
+        // JIT warm-up (not measured), so that the first version doesn't incur the cost of compilation
+        countLocal(threads);
+
+        // Version 1: without synchronization, 3 runs
+        for (int run = 1; run <= 3; run++) {
+            long t0 = System.nanoTime();
+            long[] r = countUnsync(threads);
+            report("1) unsynchronized, run " + run, t0, r);
+        }
+        // Version 2: shared counters under lock (a lock on EACH number)
+        long t0 = System.nanoTime();
+        long[] r2 = countLocked(threads);
+        report("2) shared counters + lock", t0, r2);
+        // Version 3: counter for a stream
+        t0 = System.nanoTime();
+        long[] r3 = countLocal(threads);
+        report("3) per-thread counters   ", t0, r3);
+    }
+
+    private static void report(String name, long t0, long[] r) {
+        long ms = (System.nanoTime() - t0) / 1_000_000;
+        long total = r[0] + r[1] + r[2];
+        System.out.printf("[1b] %-30s %6d ms | neg=%d pos=%d zero=%d | total=%d %s%n",
+                name, ms, r[0], r[1], r[2], total, total == Main.EXPECTED ? "OK" : "MISMATCH");
+    }
+
+    private static void load(String path) throws Exception {
+        numbers = new int[(int) Main.EXPECTED];
+        try (BufferedReader br = new BufferedReader(new FileReader(path), 1 << 16)) {
             String line;
-            int idx = 0;
-            while ((line = br.readLine()) != null && idx < 50_000_000) {
-                numbers[idx++] = Integer.parseInt(line.trim());
-            }
+            while ((line = br.readLine()) != null) numbers[count++] = Integer.parseInt(line.trim());
         }
     }
 
-    public static void runAll(int numThreads) throws Exception {
-        loadData();
-
-        System.out.println("--- Starting Task 1b with " + numThreads + " threads ---");
-
-        // Variant 1: Without synchronization (race condition)
-        long start = System.currentTimeMillis();
-        UnsyncResult uRes = runUnsynchronized(numThreads);
-        System.out.println("[1b] Unsynchronized -> Time: " + (System.currentTimeMillis() - start) + 
-                " ms | Zeros: " + uRes.zeros + " (Note: totals might be incorrect due to race condition)");
-
-        // Variant 2: Locked
-        start = System.currentTimeMillis();
-        SyncResult sRes = runLocked(numThreads);
-        System.out.println("[1b] Locked (ReentrantLock) -> Time: " + (System.currentTimeMillis() - start) + 
-                " ms | Zeros: " + sRes.zeros);
-
-        // Variant 3: Thread-local
-        start = System.currentTimeMillis();
-        LocalResult lRes = runLocal(numThreads);
-        System.out.println("[1b] Thread-Local Counters -> Time: " + (System.currentTimeMillis() - start) + 
-                " ms | Zeros: " + lRes.zeros);
-    }
-
-    //  Way 1: No synchronization
-    private static class UnsyncResult { long neg = 0, pos = 0, zeros = 0; }
-    
-    private static UnsyncResult runUnsynchronized(int threads) throws Exception {
-        UnsyncResult res = new UnsyncResult();
+    private static void parallel(int threads, Range body) throws Exception {
         ExecutorService ex = Executors.newFixedThreadPool(threads);
-        int chunkSize = numbers.length / threads;
-        
+        int chunk = count / threads;
+        List<Callable<Void>> tasks = new ArrayList<>();
         for (int i = 0; i < threads; i++) {
-            final int start = i * chunkSize;
-            final int end = (i == threads - 1) ? numbers.length : (start + chunkSize);
-            ex.submit(() -> {
-                for (int j = start; j < end; j++) {
-                    if (numbers[j] < 0) res.neg++;
-                    else if (numbers[j] > 0) res.pos++;
-                    else res.zeros++;
-                }
-            });
+            final int idx = i;
+            final int s = i * chunk;
+            final int e = (i == threads - 1) ? count : s + chunk;
+            tasks.add(() -> { body.run(idx, s, e); return null; });
         }
+        for (Future<Void> f : ex.invokeAll(tasks)) f.get();
         ex.shutdown();
-        ex.awaitTermination(1, TimeUnit.MINUTES);
-        return res;
     }
 
-    // Way 2: ReentrantLock
-    private static class SyncResult { long neg = 0, pos = 0, zeros = 0; }
-    
-    private static SyncResult runLocked(int threads) throws Exception {
-        SyncResult res = new SyncResult();
-        Lock lock = new ReentrantLock();
-        ExecutorService ex = Executors.newFixedThreadPool(threads);
-        int chunkSize = numbers.length / threads;
-        
-        for (int i = 0; i < threads; i++) {
-            final int start = i * chunkSize;
-            final int end = (i == threads - 1) ? numbers.length : (start + chunkSize);
-            ex.submit(() -> {
-                long lNeg = 0, lPos = 0, lZero = 0;
-                for (int j = start; j < end; j++) {
-                    if (numbers[j] < 0) lNeg++;
-                    else if (numbers[j] > 0) lPos++;
-                    else lZero++;
-                }
+    // Version 1: all threads perform an increment (++) operation on the exact same fields. This is a data race.
+    private static long[] countUnsync(int threads) throws Exception {
+        Shared sh = new Shared();
+        parallel(threads, (idx, s, e) -> {
+            for (int j = s; j < e; j++) {
+                int v = numbers[j];
+                if (v < 0) sh.neg++;
+                else if (v > 0) sh.pos++;
+                else sh.zeros++;
+            }
+        });
+        return new long[]{sh.neg, sh.pos, sh.zeros};
+    }
+
+    // Version 2: same shared fields, but each `++` operation is wrapped in a `lock`/`unlock`. Correct, but slow.
+    private static long[] countLocked(int threads) throws Exception {
+        Shared sh = new Shared();
+        ReentrantLock lock = new ReentrantLock();
+        parallel(threads, (idx, s, e) -> {
+            for (int j = s; j < e; j++) {
+                int v = numbers[j];
                 lock.lock();
                 try {
-                    res.neg += lNeg; 
-                    res.pos += lPos; 
-                    res.zeros += lZero;
+                    if (v < 0) sh.neg++;
+                    else if (v > 0) sh.pos++;
+                    else sh.zeros++;
                 } finally {
                     lock.unlock();
                 }
-            });
-        }
-        ex.shutdown();
-        ex.awaitTermination(1, TimeUnit.MINUTES);
-        return res;
+            }
+        });
+        return new long[]{sh.neg, sh.pos, sh.zeros};
     }
 
-    // Way 3: Local counters ( fastest and safest)
-    private static class LocalResult { long neg = 0, pos = 0, zeros = 0; }
-    
-    private static LocalResult runLocal(int threads) throws Exception {
-        ExecutorService ex = Executors.newFixedThreadPool(threads);
-        LocalResult[] results = new LocalResult[threads];
-        int chunkSize = numbers.length / threads;
-        
-        for (int i = 0; i < threads; i++) {
-            final int idx = i;
-            final int start = i * chunkSize;
-            final int end = (i == threads - 1) ? numbers.length : (start + chunkSize);
-            results[idx] = new LocalResult();
-            
-            ex.submit(() -> {
-                for (int j = start; j < end; j++) {
-                    if (numbers[j] < 0) results[idx].neg++;
-                    else if (numbers[j] > 0) results[idx].pos++;
-                    else results[idx].zeros++;
-                }
-            });
-        }
-        ex.shutdown();
-        ex.awaitTermination(1, TimeUnit.MINUTES);
-        
-        LocalResult total = new LocalResult();
-        for (LocalResult r : results) {
-            total.neg += r.neg; 
-            total.pos += r.pos; 
-            total.zeros += r.zeros;
-        }
-        return total;
+    // Version 3: each thread has its own local variables; we sum them up after the join.
+    private static long[] countLocal(int threads) throws Exception {
+        long[][] parts = new long[threads][];
+        parallel(threads, (idx, s, e) -> {
+            long n = 0, p = 0, z = 0;
+            for (int j = s; j < e; j++) {
+                int v = numbers[j];
+                if (v < 0) n++;
+                else if (v > 0) p++;
+                else z++;
+            }
+            parts[idx] = new long[]{n, p, z}; //  record it once at the end
+        });
+        long[] t = new long[3];
+        for (long[] p : parts) { t[0] += p[0]; t[1] += p[1]; t[2] += p[2]; }
+        return t;
     }
 }

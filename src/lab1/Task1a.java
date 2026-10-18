@@ -1,133 +1,74 @@
 package lab1;
 
-import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+/**
+ * Task 1a. A file is divided into N byte ranges [start, end).
+ * Boundary rule: a thread processes exactly those lines that BEGIN within [start, end).
+ *  - If start > 0: examine the data starting from byte `start-1` and skip everything up to and including the first '\n' encountered
+ *  (this partial line belongs to the preceding thread);
+ *  Any line that begins before `end` must be read in its entirety, even if it extends beyond the `end` boundary.
+ */
 public class Task1a {
 
-    public static class Result {
-        long negatives = 0;
-        long positives = 0;
-        long zeros = 0;
-
-        public void merge(Result other) {
-            this.negatives += other.negatives;
-            this.positives += other.positives;
-            this.zeros += other.zeros;
+    public static NumberCounter run(int threads, String path) throws Exception {
+        long size;
+        try (RandomAccessFile raf = new RandomAccessFile(path, "r")) {
+            size = raf.length();
         }
+        long chunk = size / threads;
+        ExecutorService ex = Executors.newFixedThreadPool(threads);
+        List<Future<NumberCounter>> fs = new ArrayList<>();
+        for (int i = 0; i < threads; i++) {
+            long start = i * chunk;
+            long end = (i == threads - 1) ? size : (i + 1) * chunk;
+            fs.add(ex.submit(() -> processRange(path, start, end)));
+        }
+        ex.shutdown();
+        NumberCounter total = new NumberCounter();
+        for (Future<NumberCounter> f : fs) total.merge(f.get());
+        return total;
     }
 
-    private static class ChunkWorker implements Callable<Result> {
-        private final File file;
-        private final long startByte;
-        private final long endByte;
+    private static NumberCounter processRange(String path, long start, long end) throws Exception {
+        NumberCounter c = new NumberCounter();
+        try (RandomAccessFile raf = new RandomAccessFile(path, "r");
+             FileChannel ch = raf.getChannel()) {
 
-        public ChunkWorker(File file, long startByte, long endByte) {
-            this.file = file;
-            this.startByte = startByte;
-            this.endByte = endByte;
-        }
+            boolean skipping = start > 0;
+            long pos = skipping ? start - 1 : start;
+            ch.position(pos);
 
-        @Override
-        public Result call() throws Exception {
-            Result result = new Result();
-            try (RandomAccessFile raf = new RandomAccessFile(file, "r");
-                 FileChannel channel = raf.getChannel()) {
-
-                long start = startByte;
-                if (start > 0) {
-                    channel.position(start - 1);
-                    ByteBuffer oneByte = ByteBuffer.allocate(1);
-                    channel.read(oneByte);
-                    if (oneByte.get(0) != '\n') {
-                        ByteBuffer buf = ByteBuffer.allocate(1024);
-                        while (channel.read(buf) != -1) {
-                            buf.flip();
-                            while (buf.hasRemaining()) {
-                                start++;
-                                if (buf.get() == '\n') break;
-                            }
-                            if (buf.get(buf.position() - 1) == '\n') break;
-                            buf.clear();
+            byte[] arr = new byte[1 << 16];
+            ByteBuffer bb = ByteBuffer.wrap(arr);
+            boolean done = false;
+            while (!done) {
+                bb.clear();
+                int n = ch.read(bb);
+                if (n < 0) break;
+                for (int i = 0; i < n; i++) {
+                    byte b = arr[i];
+                    pos++;
+                    if (skipping) {
+                        if (b == '\n') {
+                            skipping = false;
+                            if (pos >= end) { done = true; break; }
                         }
+                        continue;
                     }
-                }
-
-                channel.position(start);
-                long remainingBytes = endByte - start;
-                if (remainingBytes <= 0) return result;
-
-                ByteBuffer buffer = ByteBuffer.allocate(65536);
-                StringBuilder sb = new StringBuilder();
-                long bytesReadTotal = 0;
-
-                while (bytesReadTotal < remainingBytes) {
-                    buffer.clear();
-                    int limit = (int) Math.min(buffer.capacity(), remainingBytes - bytesReadTotal);
-                    buffer.limit(limit);
-                    int read = channel.read(buffer);
-                    if (read == -1) break;
-                    bytesReadTotal += read;
-                    buffer.flip();
-
-                    while (buffer.hasRemaining()) {
-                        byte b = buffer.get();
-                        if (b == '\n' || b == '\r') {
-                            if (sb.length() > 0) {
-                                parseAndCount(sb.toString(), result);
-                                sb.setLength(0);
-                            }
-                        } else {
-                            sb.append((char) b);
-                        }
-                    }
-                }
-                if (sb.length() > 0) {
-                    parseAndCount(sb.toString(), result);
+                    c.add(b);
+                    if (b == '\n' && pos >= end) { done = true; break; }
                 }
             }
-            return result;
+            if (!skipping) c.endLine();
         }
-
-        private void parseAndCount(String line, Result res) {
-            try {
-                int num = Integer.parseInt(line.trim());
-                if (num < 0) res.negatives++;
-                else if (num > 0) res.positives++;
-                else res.zeros++;
-            } catch (NumberFormatException ignored) {}
-        }
-    }
-
-    public static Result runTask(int numThreads) throws Exception {
-        File file = new File("numbers.txt");
-        long fileSize = file.length();
-        long chunkSize = fileSize / numThreads;
-
-        ExecutorService executor = Executors.newFixedThreadPool(numThreads);
-        List<Future<Result>> futures = new ArrayList<>();
-
-        for (int i = 0; i < numThreads; i++) {
-            long start = i * chunkSize;
-            long end = (i == numThreads - 1) ? fileSize : (i + 1) * chunkSize;
-            futures.add(executor.submit(new ChunkWorker(file, start, end)));
-        }
-
-        executor.shutdown();
-
-        Result totalResult = new Result();
-        for (Future<Result> future : futures) {
-            totalResult.merge(future.get());
-        }
-
-        return totalResult;
+        return c;
     }
 }

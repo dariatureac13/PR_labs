@@ -7,81 +7,60 @@ import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Future;
 
+/** Task 1c: one reader + N workers + a blocking queue with a capacity of 100 batches of 10,000 rows each. */
 public class Task1c {
+    private static final int BATCH = 10_000;
+    private static final int QUEUE = 100;
+    private static final List<String> POISON = new ArrayList<>(); // метка "конец файла"
 
-    // Special thread termination marker (Poison Pill)
-    private static final List<String> POISON_PILL = new ArrayList<>();
+    public static NumberCounter run(int workers, String path) throws Exception {
+        ArrayBlockingQueue<List<String>> queue = new ArrayBlockingQueue<>(QUEUE);
+        NumberCounter total = new NumberCounter();
+        ExecutorService ex = Executors.newFixedThreadPool(workers + 1);
+        List<Future<?>> fs = new ArrayList<>();
 
-    public static class Result {
-        public long negatives = 0;
-        public long positives = 0;
-        public long zeros = 0;
-
-        public synchronized void merge(List<String> batch) {
-            for (String s : batch) {
-                try {
-                    int val = Integer.parseInt(s.trim());
-                    if (val < 0) negatives++;
-                    else if (val > 0) positives++;
-                    else zeros++;
-                } catch (NumberFormatException ignored) {}
-            }
-        }
-    }
-
-    public static Result runTask(int numWorkers) throws Exception {
-        // A queue with a buffer size limit of 100 batches
-        ArrayBlockingQueue<List<String>> queue = new ArrayBlockingQueue<>(100);
-        Result totalResult = new Result();
-
-        // Thread pool: 1 reading thread (Producer) + numWorkers for computation (Consumers).
-        ExecutorService executor = Executors.newFixedThreadPool(numWorkers + 1);
-
-        // PRODUCER (Reading Thread)
-        executor.submit(() -> {
-            try (BufferedReader br = new BufferedReader(new FileReader("numbers.txt"))) {
-                List<String> batch = new ArrayList<>(10_000);
+        // Reader
+        fs.add(ex.submit(() -> {
+            try (BufferedReader br = new BufferedReader(new FileReader(path), 1 << 16)) {
+                List<String> batch = new ArrayList<>(BATCH);
                 String line;
-                
                 while ((line = br.readLine()) != null) {
                     batch.add(line);
-                    if (batch.size() == 10_000) {
-                        queue.put(batch); // Blocks the thread if the queue is full.
-                        batch = new ArrayList<>(10_000);
+                    if (batch.size() == BATCH) {
+                        queue.put(batch);          // waits, if queue is full
+                        batch = new ArrayList<>(BATCH);
                     }
                 }
-                if (!batch.isEmpty()) {
-                    queue.put(batch);
-                }
-                
-                // Sending "poison pills" to each worker so they know the file has ended.
-                for (int i = 0; i < numWorkers; i++) {
-                    queue.put(POISON_PILL);
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
+                if (!batch.isEmpty()) queue.put(batch);
+            } finally {
+                // even if the reader has failed, the workers must receive a stop signal
+                for (int i = 0; i < workers; i++) queue.put(POISON);
             }
-        });
+            return null;
+        }));
 
-        //  CONSUMERS (Working threads)
-        for (int i = 0; i < numWorkers; i++) {
-            executor.submit(() -> {
-                try {
-                    while (true) {
-                        List<String> batch = queue.take(); // Waits until a batch appears in the queue.
-                        if (batch == POISON_PILL) {
-                            break; // Exiting the loop upon receiving the termination signal.
-                        }
-                        totalResult.merge(batch);
+        // Workers: perform parsing OUTSIDE the lock; only 3 additions occur under the lock, right at the very end.
+        for (int w = 0; w < workers; w++) {
+            fs.add(ex.submit(() -> {
+                long n = 0, p = 0, z = 0;
+                while (true) {
+                    List<String> batch = queue.take(); // waits, if queue is empty
+                    if (batch == POISON) break;
+                    for (String s : batch) {
+                        int v = Integer.parseInt(s.trim());
+                        if (v < 0) n++;
+                        else if (v > 0) p++;
+                        else z++;
                     }
-                } catch (Exception ignored) {}
-            });
+                }
+                total.mergeCounts(n, p, z);
+                return null;
+            }));
         }
-
-        executor.shutdown();
-        executor.awaitTermination(2, TimeUnit.MINUTES);
-        return totalResult;
+        ex.shutdown();
+        for (Future<?> f : fs) f.get(); // will throw an exception if something fails
+        return total;
     }
 }

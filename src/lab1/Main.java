@@ -1,57 +1,49 @@
 package lab1;
 
 public class Main {
-    public static void main(String[] args) {
+    public static final long EXPECTED = Long.getLong("expected", 50_000_000L);
+
+    public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.out.println("Usage: java lab1.Main <task> <threads>");
+            System.out.println("Usage: java lab1.Main <1a|1b|1c|2> <threads> [dir-for-task2]");
+            System.out.println("  1b ignores <threads>: it uses all logical processors.");
             return;
         }
-
         String task = args[0];
         int threads = Integer.parseInt(args[1]);
+        String dir = args.length > 2 ? args[2] : ".";
 
-        try {
-            // Force garbage collection before measurement to clear old objects
-            System.gc();
-            Thread.sleep(100); // Give the garbage collector thread time to run
+        System.gc();
+        Thread.sleep(100);
+        MemoryMonitor mon = MemoryMonitor.begin();
+        long t0 = System.nanoTime();
+        NumberCounter res = null;
 
-            Runtime runtime = Runtime.getRuntime();
-            long memoryBefore = runtime.totalMemory() - runtime.freeMemory();
-            long startTime = System.currentTimeMillis();
-
-            // Execute tasks
-            if (task.equals("1a")) {
-                Task1a.Result res = Task1a.runTask(threads);
-                printResult(res.negatives, res.positives, res.zeros);
-            } else if (task.equals("1b")) {
-                Task1b.runAll(threads);
-            } else if (task.equals("1c")) {
-                Task1c.Result res = Task1c.runTask(threads);
-                printResult(res.negatives, res.positives, res.zeros);
-            } else if (task.equals("2")) {
-                Task2.Result res = Task2.runTask(threads);
-                printResult(res.negatives, res.positives, res.zeros);
+        switch (task) {
+            case "1a" -> res = Task1a.run(threads, "numbers.txt");
+            case "1b" -> Task1b.runAll("numbers.txt");
+            case "1c" -> res = Task1c.run(threads, "numbers.txt");
+            case "2" -> res = Task2.run(threads, dir);
+            default -> {
+                System.out.println("Unknown task: " + task);
+                return;
             }
-
-
-            long endTime = System.currentTimeMillis();
-
-            // Measure memory after execution
-            long memoryAfter = runtime.totalMemory() - runtime.freeMemory();
-            long peakMemoryMB = Math.max(0, (memoryAfter - memoryBefore) / (1024 * 1024));
-
-            System.out.println("Execution Time: " + (endTime - startTime) + " ms");
-            System.out.println("Peak Memory (approx): " + peakMemoryMB + " MB");
-
-        } catch (Exception e) {
-            e.printStackTrace();
         }
-    }
 
-    private static void printResult(long neg, long pos, long zeros) {
-        System.out.println("Negatives: " + neg);
-        System.out.println("Positives: " + pos);
-        System.out.println("Zeros: " + zeros);
-        System.out.println("Total sum check: " + (neg + pos + zeros));
+        long ms = (System.nanoTime() - t0) / 1_000_000;
+        mon.end();
+
+        if (res != null) {
+            System.out.println("Negatives: " + res.negatives);
+            System.out.println("Positives: " + res.positives);
+            System.out.println("Zeros:     " + res.zeros);
+            System.out.println("Total:     " + res.total() + (res.total() == EXPECTED ? "  OK" : "  MISMATCH (expected " + EXPECTED + ")"));
+            System.out.println("Execution Time: " + ms + " ms");
+        } else {
+            System.out.println("(1b: time of each version is printed above; total time here includes loading)");
+        }
+        System.out.println("Peak heap (sampled): " + mon.peakHeapMB() + " MB");
+        long rss = MemoryMonitor.peakRssMB();
+        System.out.println("Peak RSS (VmHWM):    " + (rss < 0 ? "n/a on this OS, use /usr/bin/time -l or Task Manager" : rss + " MB"));
     }
 }
